@@ -28,6 +28,7 @@ Configuration is via appsettings.json:-
 ```
 
 Example below is a notification triggered by a query monitoring for bank detail changes on a suppliers table. It picked up a BankAccount column change.
+
 ![example.jpg](example.jpg)
 ---
 
