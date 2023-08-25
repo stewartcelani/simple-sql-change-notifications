@@ -6,7 +6,6 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{81C1DE63-B
 	ProjectSection(SolutionItems) = preProject
 		.gitattributes = .gitattributes
 		.gitignore = .gitignore
-		email-notification-example.png = email-notification-example.png
 		LICENSE = LICENSE
 		README.md = README.md
 	EndProjectSection
