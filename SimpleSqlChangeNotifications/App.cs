@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Serilog.Events;
 using Serilog.Sinks.InMemory;
 using SimpleSqlChangeNotifications.Data;
+using SimpleSqlChangeNotifications.Helpers;
 using SimpleSqlChangeNotifications.Library;
 using SimpleSqlChangeNotifications.Options;
 
@@ -34,10 +35,15 @@ public class App
             GetExecutableHash(); // Need to ignore/invalidate the queryCache.json file if the executable changes versions
 
         var cachedResults = new List<DataItem>();
+        var sinceText = string.Empty;
         if (File.Exists("queryCache.json"))
         {
             var cachedData = await File.ReadAllTextAsync("queryCache.json");
-            var cache = JsonSerializer.Deserialize<QueryCache>(cachedData);
+            var serializerOptions = new JsonSerializerOptions
+            {
+                Converters = { new ObjectDeserializer() }
+            };
+            var cache = JsonSerializer.Deserialize<QueryCache>(cachedData, serializerOptions);
 
             if (cache?.SimpleSqlChangeNotificationOptionsHash == optionsHash && cache.ExecutableHash == exeHash)
             {
@@ -46,6 +52,7 @@ public class App
                 var currentTime = DateTime.Now;
                 var hoursAgo = (currentTime - lastWriteTime).TotalHours;
                 var roundedHoursAgo = Math.Round(hoursAgo, 1); // Round to one decimal place
+                sinceText = $"since {lastWriteTime} ({roundedHoursAgo} hours ago)";
                 _logger.LogInformation(
                     "Cached results ({cachedResultsCount} rows) found from previous run at {time} ({hoursAgo} hours ago).",
                     cachedResults.Count, lastWriteTime, roundedHoursAgo);
@@ -76,6 +83,7 @@ public class App
         var added = new List<string>();
         var changed = new List<string>();
 
+        var changes = new List<DataItemChange>();
 
         // Compare the cached results with the new results
         if (cachedResults.Any())
@@ -87,35 +95,47 @@ public class App
             }
 
             // Check for new rows and changes
-            foreach (var newItem in queryResult)
+            foreach (var newRow in queryResult)
             {
-                var oldItem = cachedResults.FirstOrDefault(item =>
+                var oldRow = cachedResults.FirstOrDefault(item =>
                     _options.PrimaryKey.All(key =>
-                        item.Value.ContainsKey(key) && item.Value[key]?.ToString() == newItem.Value[key]?.ToString()));
+                        item.Value.ContainsKey(key) && item.Value[key]?.ToString() == newRow.Value[key]?.ToString()));
 
-                if (oldItem == null)
+                if (oldRow == null)
                 {
                     var keyValues = string.Join(", ",
-                        _options.PrimaryKey.Select(key => $"{key}: {newItem.Value[key]}"));
+                        _options.PrimaryKey.Select(key => $"{key}: {newRow.Value[key]}"));
                     var addedText = new List<string>
                     {
                         $"New row: {keyValues}",
-                        $"New value: {JsonSerializer.Serialize(newItem.Value)}"
+                        $"New value: {JsonSerializer.Serialize(newRow.Value)}"
                     };
                     added.AddRange(addedText);
                     foreach (var s in addedText)
                     {
                         _logger.LogDebug(s);
                     }
+
+                    changes.Add(new DataItemChange
+                    {
+                        OldRow = null,
+                        NewRow = newRow
+                    });
                 }
-                else if (oldItem.Hash != newItem.Hash)
+                else if (oldRow.Hash != newRow.Hash)
                 {
                     var keyValues = string.Join(", ",
-                        _options.PrimaryKey.Select(key => $"{key}: {newItem.Value[key]}"));
+                        _options.PrimaryKey.Select(key => $"{key}: {newRow.Value[key]}"));
+
+                    changes.Add(new DataItemChange
+                    {
+                        OldRow = oldRow,
+                        NewRow = newRow
+                    });
 
                     // Convert the old and new values to JSON
-                    var oldJson = JsonSerializer.Serialize(oldItem.Value);
-                    var newJson = JsonSerializer.Serialize(newItem.Value);
+                    var oldJson = JsonSerializer.Serialize(oldRow.Value);
+                    var newJson = JsonSerializer.Serialize(newRow.Value);
 
                     var changedText = new List<string>
                     {
@@ -135,7 +155,7 @@ public class App
 
         if (added.Any() || changed.Any())
         {
-            if (!HandleNotification())
+            if (!HandleNotification(connection.Database, sinceText, changes))
             {
                 _logger.LogError("Changes detected but failed to send notification.");
             }
@@ -161,33 +181,91 @@ public class App
         _logger.LogInformation("Program end.");
     }
 
-    private bool HandleNotification()
+    private bool HandleNotification(string databaseName, string sinceText, List<DataItemChange> changes)
     {
         _logger.LogInformation("Changes detected. Sending notification.");
 
-        var client = new SimpleEmailClient(_options.SmtpServer, _options.SmtpPort, _options.SmtpFromAddress, _logger);
-        try
+        var table = new List<string>();
+        table.Add(@"
+            <style>
+                table {
+                  font-family: arial, sans-serif;
+                  border-collapse: collapse;
+                  width: 100%;
+                }
+
+                table * {
+                  font-size: 11px;                  
+                }
+
+                td, th {
+                  border: 1px solid #dddddd;
+                  text-align: left;
+                  padding: 8px;
+                }
+
+                tr:nth-child(even) {
+                  background-color: #dddddd;
+                }
+            </style>
+        ");
+        table.Add("<table style ='width:100%;'>");
+
+        // Table Header
+        table.Add("<tr>");
+        var header = "<th>&nbsp;</th>";
+        changes[0].NewRow.Value.Keys.ToList().ForEach(key => header += $"<th>{key}</th>");
+        table.Add(header);
+        table.Add("</tr>");
+
+        // Table Rows
+        foreach (var dataItemChange in changes)
         {
-            var subject = $"[{Environment.MachineName}] SQL Change Notification";
-            var htmlContent = new StringBuilder("<div style='font-family:Courier New'><pre>");
-            foreach (var instanceLogEvent in InMemorySink.Instance.LogEvents.ToList())
+            table.Add("<tr>");
+
+            var row = $"<th>{dataItemChange.Status}</th>";
+
+            // loop through each column
+            foreach (var key in dataItemChange.NewRow.Value.Keys)
             {
-                var logLevelShortString = GetLogLevelShortString(instanceLogEvent.Level);
-                var logLevelColor = GetLogLevelColor(instanceLogEvent.Level);
-                var encodedMessage = System.Net.WebUtility.HtmlEncode(instanceLogEvent.RenderMessage());
+                var oldValue = dataItemChange.OldRow?.Value[key] ?? null;
+                var newValue = dataItemChange.NewRow.Value[key];
 
-                // Highlight the query string within the log message
-                var queryHighlightColor = "#FF0000"; // Red
-                encodedMessage = encodedMessage.Replace(System.Net.WebUtility.HtmlEncode(_options.Query),
-                    $"<span style='color:{queryHighlightColor}'>{System.Net.WebUtility.HtmlEncode(_options.Query)}</span>");
+                row += "<td>";
 
-                htmlContent.AppendLine(
-                    $"<span style='color:{logLevelColor}'>[{instanceLogEvent.Timestamp:HH:mm:ss} {logLevelShortString}] {encodedMessage}</span>");
+                if (oldValue is not null && !oldValue.Equals(newValue))
+                {
+                    row += $"<del style='color: red;'>{oldValue}</del> ";
+                }
+
+                row += $"{newValue}";
+
+                row += "</td>";
             }
 
-            htmlContent.Append("</pre></div>");
+            table.Add(row);
 
-            client.SendEmail(_options.SmtpToAddress, subject, htmlContent.ToString(), true);
+            table.Add("</tr>");
+        }
+
+        table.Add("</table>");
+        
+
+
+        var client = new SimpleEmailClient(_options.SmtpServer, _options.SmtpPort, _options.SmtpFromAddress,
+            _options.SmtpSSL, _options.SmtpUsername, _options.SmtpPassword, _logger);
+        try
+        {
+            var subjectSummary = changes.Count == 1 ? "1 change" : $"{changes.Count} changes";
+            var subject = $"[{databaseName}] {subjectSummary}";
+            var htmlContent = @$"
+                    <p>You are receiving this email because you are subscribed to receive notifications for changes to the following SQL query on the <b>{databaseName}</b> database: </p>
+                    <pre style='color: orange;'>{_options.Query}</pre>                    
+                    <h3 style='margin-bottom: 10px;'>{subjectSummary} {sinceText}</h3>              
+                ";
+                
+            htmlContent += string.Join("\n", table);
+            client.SendEmail(_options.SmtpToAddress, subject, htmlContent, true);
             return true;
         }
         catch
@@ -195,37 +273,6 @@ public class App
             return false;
         }
     }
-
-
-    private string GetLogLevelColor(LogEventLevel logEventLevel)
-    {
-        return logEventLevel switch
-        {
-            LogEventLevel.Verbose => "#B3B3B3", // Light Grey
-            LogEventLevel.Debug => "#808080", // Grey
-            LogEventLevel.Information => "#000000", // Black
-            LogEventLevel.Warning => "#FF8C00", // Orange
-            LogEventLevel.Error => "#FF0000", // Red
-            LogEventLevel.Fatal => "#8B0000", // Dark Red
-            _ => throw new ArgumentOutOfRangeException(nameof(logEventLevel))
-        };
-    }
-
-
-    private string GetLogLevelShortString(LogEventLevel logEventLevel)
-    {
-        return logEventLevel switch
-        {
-            LogEventLevel.Verbose => "VRB",
-            LogEventLevel.Debug => "DBG",
-            LogEventLevel.Information => "INF",
-            LogEventLevel.Warning => "WRN",
-            LogEventLevel.Error => "ERR",
-            LogEventLevel.Fatal => "FTL",
-            _ => throw new ArgumentOutOfRangeException(nameof(logEventLevel))
-        };
-    }
-
 
     private string ComputeHash(string input)
     {

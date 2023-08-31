@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Mail;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -10,17 +11,23 @@ public class SimpleEmailClient
     private readonly ILogger? _logger;
     private readonly int _smtpPort;
     private readonly string _smtpServer;
+    private readonly bool _ssl;
+    private readonly string? _username;
+    private readonly string? _password;
 
-    public SimpleEmailClient(string smtpServer, int smtpPort, string fromAddress,
-        ILogger? logger = null)
+    public SimpleEmailClient(string smtpServer, int smtpPort, string fromAddress, bool ssl, string? username = null, 
+        string? password = null, ILogger? logger = null)
     {
         _smtpServer = smtpServer;
         _smtpPort = smtpPort;
         _fromAddress = fromAddress;
+        _ssl = ssl;
+        _username ??= username;
+        _password ??= password;
         _logger ??= logger;
+        
     }
 
-    // Send email using the smtp client here
     public void SendEmail(string[] toAddress, string subject, string body, bool isBodyHtml = false)
     {
         _logger?.LogInformation($"Sending email with subject '{subject}' to {string.Join(", ", toAddress)}");
@@ -29,6 +36,15 @@ public class SimpleEmailClient
             using var smtp = new SmtpClient();
             smtp.Host = _smtpServer;
             smtp.Port = _smtpPort;
+            
+            if (_username is not null && _password is not null)
+            {
+                if (_ssl)
+                {
+                    smtp.EnableSsl = true;
+                }
+                smtp.Credentials = new NetworkCredential(_username, _password);
+            }
 
             var message = new MailMessage();
             message.From = new MailAddress(_fromAddress);
