@@ -12,31 +12,16 @@ public class ObjectDeserializer : JsonConverter<object>
         if (type == JsonTokenType.Number)
         {
             var oki = reader.TryGetInt32(out var vali);
-            if (oki)
-            {
-                return vali;
-            }
+            if (oki) return vali;
             var okl = reader.TryGetInt64(out var vall);
-            if (okl)
-            {
-                return vall;
-            }
+            if (okl) return vall;
             var okd = reader.TryGetDouble(out var val);
-            if (okd)
-            {
-                return val;
-            }
+            if (okd) return val;
         }
 
-        if (type == JsonTokenType.String)
-        {
-            return reader.GetString();
-        }
+        if (type == JsonTokenType.String) return reader.GetString();
 
-        if (type == JsonTokenType.True || type == JsonTokenType.False)
-        {
-            return reader.GetBoolean();
-        }
+        if (type == JsonTokenType.True || type == JsonTokenType.False) return reader.GetBoolean();
         // copied from corefx repo:
         using var document = JsonDocument.ParseValue(ref reader);
         return document.RootElement.Clone();

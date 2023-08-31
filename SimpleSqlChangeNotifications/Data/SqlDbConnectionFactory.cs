@@ -12,7 +12,7 @@ public class SqlDbConnectionFactory : IDbConnectionFactory
     {
         _logger = logger;
     }
-    
+
     public IDataAccessor CreateConnection(string connectionString)
     {
         return new DataAccessor(new SqlConnection(connectionString));

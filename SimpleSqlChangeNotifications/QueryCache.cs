@@ -7,7 +7,6 @@ public class QueryCache
     public List<DataItem> Data { get; set; }
 }
 
-
 public class DataItem
 {
     public string Hash { get; set; }
@@ -19,5 +18,4 @@ public class DataItemChange
     public DataItem? OldRow { get; init; } = null;
     public DataItem NewRow { get; init; } = default!;
     public string Status => OldRow == null ? "Added" : "Updated";
-    
 }

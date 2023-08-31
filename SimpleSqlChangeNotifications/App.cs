@@ -1,11 +1,10 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
+using Common.Extensions.Object;
 using Microsoft.Extensions.Logging;
-using Serilog.Events;
-using Serilog.Sinks.InMemory;
+using Newtonsoft.Json;
 using SimpleSqlChangeNotifications.Data;
-using SimpleSqlChangeNotifications.Helpers;
 using SimpleSqlChangeNotifications.Library;
 using SimpleSqlChangeNotifications.Options;
 
@@ -13,9 +12,9 @@ namespace SimpleSqlChangeNotifications;
 
 public class App
 {
+    private readonly IDbConnectionFactory _dbConnectionFactory;
     private readonly ILogger<App> _logger;
     private readonly SimpleSqlChangeNotificationOptions _options;
-    private readonly IDbConnectionFactory _dbConnectionFactory;
 
     public App(ILogger<App> logger, IDbConnectionFactory dbConnectionFactory,
         SimpleSqlChangeNotificationOptions options)
@@ -29,25 +28,22 @@ public class App
     {
         _logger.LogInformation("Program start.");
         _logger.LogInformation("Looking for changes for query: {query}", _options.Query);
+        
+        var optionsHash = ComputeHash(Encoding.UTF8.GetBytes(_options.ConnectionString + _options.Query + string.Join(",", _options.PrimaryKey)));
 
-        var optionsHash = HashOptions(_options);
-        var exeHash =
-            GetExecutableHash(); // Need to ignore/invalidate the queryCache.json file if the executable changes versions
+        var exeHash = ComputeHash(File.ReadAllBytes(Assembly.GetExecutingAssembly().Location));
 
-        var cachedResults = new List<DataItem>();
+
+        var oldResult = new List<DataItem>();
         var sinceText = string.Empty;
         if (File.Exists("queryCache.json"))
         {
             var cachedData = await File.ReadAllTextAsync("queryCache.json");
-            var serializerOptions = new JsonSerializerOptions
-            {
-                Converters = { new ObjectDeserializer() }
-            };
-            var cache = JsonSerializer.Deserialize<QueryCache>(cachedData, serializerOptions);
+            var cache = JsonConvert.DeserializeObject<QueryCache>(cachedData);
 
             if (cache?.SimpleSqlChangeNotificationOptionsHash == optionsHash && cache.ExecutableHash == exeHash)
             {
-                cachedResults = cache.Data;
+                oldResult = cache.Data;
                 var lastWriteTime = File.GetLastWriteTime("queryCache.json");
                 var currentTime = DateTime.Now;
                 var hoursAgo = (currentTime - lastWriteTime).TotalHours;
@@ -55,13 +51,13 @@ public class App
                 sinceText = $"since {lastWriteTime} ({roundedHoursAgo} hours ago)";
                 _logger.LogInformation(
                     "Cached results ({cachedResultsCount} rows) found from previous run at {time} ({hoursAgo} hours ago).",
-                    cachedResults.Count, lastWriteTime, roundedHoursAgo);
+                    oldResult.Count, lastWriteTime, roundedHoursAgo);
             }
             else
             {
                 _logger.LogWarning(
                     "Cached results found but options hash or executable hash has changed. Ignoring cached results.");
-                cachedResults = new List<DataItem>();
+                oldResult = new List<DataItem>();
             }
         }
 
@@ -73,31 +69,42 @@ public class App
             var value = dapperRow.ToDictionary(pair => pair.Key, pair => pair.Value);
             return new DataItem
             {
-                Hash = ComputeHash(JsonSerializer.Serialize(value)),
+                Hash = ComputeHash(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(value))),
                 Value = value
             };
         }).ToList();
 
+        // Serialize the results and hash to JSON
+        var cacheToWrite = new QueryCache
+        {
+            SimpleSqlChangeNotificationOptionsHash = optionsHash,
+            ExecutableHash = exeHash,
+            Data = queryResult
+        };
+        var json = JsonConvert.SerializeObject(cacheToWrite);
+
         _logger.LogInformation("Query found {rowCount} rows.", queryResult.Count);
 
-        var added = new List<string>();
-        var changed = new List<string>();
-
-        var changes = new List<DataItemChange>();
+        // Write the JSON to a file
+        _logger.LogInformation("Storing {queryResultCount} rows in queryCache.json.", queryResult.Count);
+        await File.WriteAllTextAsync("queryCache.json", json);
+        var newCache =
+            JsonConvert.DeserializeObject<QueryCache>(await File.ReadAllTextAsync("queryCache.json"));
+        var newResult = newCache!.Data;
 
         // Compare the cached results with the new results
-        if (cachedResults.Any())
+        var changes = new List<DataItemChange>();
+
+        if (oldResult.Any())
         {
-            if (cachedResults.Count != queryResult.Count)
-            {
+            if (oldResult.Count != newResult.Count)
                 _logger.LogWarning("Row count has changed from {cachedResultsCount} to {queryResultCount}.",
-                    cachedResults.Count, queryResult.Count);
-            }
+                    oldResult.Count, queryResult.Count);
 
             // Check for new rows and changes
-            foreach (var newRow in queryResult)
+            foreach (var newRow in newResult)
             {
-                var oldRow = cachedResults.FirstOrDefault(item =>
+                var oldRow = oldResult.FirstOrDefault(item =>
                     _options.PrimaryKey.All(key =>
                         item.Value.ContainsKey(key) && item.Value[key]?.ToString() == newRow.Value[key]?.ToString()));
 
@@ -105,16 +112,9 @@ public class App
                 {
                     var keyValues = string.Join(", ",
                         _options.PrimaryKey.Select(key => $"{key}: {newRow.Value[key]}"));
-                    var addedText = new List<string>
-                    {
-                        $"New row: {keyValues}",
-                        $"New value: {JsonSerializer.Serialize(newRow.Value)}"
-                    };
-                    added.AddRange(addedText);
-                    foreach (var s in addedText)
-                    {
-                        _logger.LogDebug(s);
-                    }
+
+                    _logger.LogDebug($"New row: {keyValues}");
+                    _logger.LogDebug($"New value: {JsonConvert.SerializeObject(newRow.Value)}");
 
                     changes.Add(new DataItemChange
                     {
@@ -134,52 +134,29 @@ public class App
                     });
 
                     // Convert the old and new values to JSON
-                    var oldJson = JsonSerializer.Serialize(oldRow.Value);
-                    var newJson = JsonSerializer.Serialize(newRow.Value);
+                    var oldJson = JsonConvert.SerializeObject(oldRow.Value);
+                    var newJson = JsonConvert.SerializeObject(newRow.Value);
 
-                    var changedText = new List<string>
-                    {
-                        $"Row changed: {keyValues}",
-                        $"Old value: {oldJson}",
-                        $"New value: {newJson}"
-                    };
-
-                    changed.AddRange(changedText);
-                    foreach (var s in changedText)
-                    {
-                        _logger.LogWarning(s);
-                    }
+                    _logger.LogDebug($"Row changed: {keyValues}");
+                    _logger.LogDebug($"Old value: {oldJson}");
+                    _logger.LogDebug($"New value: {newJson}");
                 }
             }
         }
 
-        if (added.Any() || changed.Any())
+        if (changes.Any())
         {
             if (!HandleNotification(connection.Database, sinceText, changes))
-            {
                 _logger.LogError("Changes detected but failed to send notification.");
-            }
         }
-        else if (cachedResults.Any())
+        else if (oldResult.Any())
         {
             _logger.LogInformation("No changes detected.");
         }
 
-        // Serialize the results and hash to JSON
-        var cacheToWrite = new QueryCache
-        {
-            SimpleSqlChangeNotificationOptionsHash = optionsHash,
-            ExecutableHash = exeHash,
-            Data = queryResult
-        };
-        var json = JsonSerializer.Serialize(cacheToWrite);
-
-        // Write the JSON to a file
-        _logger.LogInformation("Storing {queryResultCount} rows in queryCache.json.", queryResult.Count);
-        await File.WriteAllTextAsync("queryCache.json", json);
-
         _logger.LogInformation("Program end.");
     }
+
 
     private bool HandleNotification(string databaseName, string sinceText, List<DataItemChange> changes)
     {
@@ -190,12 +167,11 @@ public class App
             <style>
                 table {
                   font-family: arial, sans-serif;
-                  border-collapse: collapse;
-                  width: 100%;
+                  border-collapse: collapse;                  
                 }
 
                 table * {
-                  font-size: 11px;                  
+                  font-size: 10px;                  
                 }
 
                 td, th {
@@ -209,7 +185,7 @@ public class App
                 }
             </style>
         ");
-        table.Add("<table style ='width:100%;'>");
+        table.Add("<table>");
 
         // Table Header
         table.Add("<tr>");
@@ -233,9 +209,12 @@ public class App
 
                 row += "<td>";
 
-                if (oldValue is not null && !oldValue.Equals(newValue))
+                if (oldValue is not null && !oldValue.DeepEquals(newValue))
                 {
-                    row += $"<del style='color: red;'>{oldValue}</del> ";
+                    var strikethroughValue = oldValue.ToString();
+                    if (string.IsNullOrEmpty(strikethroughValue))
+                        strikethroughValue = "&nbsp;&nbsp;&nbsp;&nbsp;";
+                    row += $"<del style='color: red;'>{strikethroughValue}</del> ";
                 }
 
                 row += $"{newValue}";
@@ -249,7 +228,6 @@ public class App
         }
 
         table.Add("</table>");
-        
 
 
         var client = new SimpleEmailClient(_options.SmtpServer, _options.SmtpPort, _options.SmtpFromAddress,
@@ -259,11 +237,11 @@ public class App
             var subjectSummary = changes.Count == 1 ? "1 change" : $"{changes.Count} changes";
             var subject = $"[{databaseName}] {subjectSummary}";
             var htmlContent = @$"
+                    <h3>{subjectSummary} {sinceText}</h3>              
                     <p>You are receiving this email because you are subscribed to receive notifications for changes to the following SQL query on the <b>{databaseName}</b> database: </p>
-                    <pre style='color: orange;'>{_options.Query}</pre>                    
-                    <h3 style='margin-bottom: 10px;'>{subjectSummary} {sinceText}</h3>              
+                    <pre style='color: orange; margin-bottom: 16px;'>{_options.Query}</pre>                    
                 ";
-                
+
             htmlContent += string.Join("\n", table);
             client.SendEmail(_options.SmtpToAddress, subject, htmlContent, true);
             return true;
@@ -274,37 +252,11 @@ public class App
         }
     }
 
-    private string ComputeHash(string input)
+    private string ComputeHash(byte[] input)
     {
-        using (SHA256 sha256Hash = SHA256.Create())
-        {
-            byte[] bytes = sha256Hash.ComputeHash(Encoding.UTF8.GetBytes(input));
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < bytes.Length; i++)
-            {
-                builder.Append(bytes[i].ToString("x2"));
-            }
-
-            return builder.ToString();
-        }
-    }
-
-    private string GetExecutableHash()
-    {
-        using var sha256 = SHA256.Create();
-        var exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
-        var bytes = File.ReadAllBytes(exePath);
-        var hashBytes = sha256.ComputeHash(bytes);
+        using var sha256Hash = SHA256.Create();
+        var hashBytes = sha256Hash.ComputeHash(input);
         return Convert.ToBase64String(hashBytes);
     }
 
-
-    private string HashOptions(SimpleSqlChangeNotificationOptions options)
-    {
-        var combinedOptions = options.ConnectionString + options.Query + string.Join(",", options.PrimaryKey);
-        using var sha256 = SHA256.Create();
-        var bytes = Encoding.UTF8.GetBytes(combinedOptions);
-        var hashBytes = sha256.ComputeHash(bytes);
-        return Convert.ToBase64String(hashBytes);
-    }
 }

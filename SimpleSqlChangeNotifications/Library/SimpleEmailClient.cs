@@ -9,13 +9,13 @@ public class SimpleEmailClient
 {
     private readonly string _fromAddress;
     private readonly ILogger? _logger;
+    private readonly string? _password;
     private readonly int _smtpPort;
     private readonly string _smtpServer;
     private readonly bool _ssl;
     private readonly string? _username;
-    private readonly string? _password;
 
-    public SimpleEmailClient(string smtpServer, int smtpPort, string fromAddress, bool ssl, string? username = null, 
+    public SimpleEmailClient(string smtpServer, int smtpPort, string fromAddress, bool ssl, string? username = null,
         string? password = null, ILogger? logger = null)
     {
         _smtpServer = smtpServer;
@@ -25,7 +25,6 @@ public class SimpleEmailClient
         _username ??= username;
         _password ??= password;
         _logger ??= logger;
-        
     }
 
     public void SendEmail(string[] toAddress, string subject, string body, bool isBodyHtml = false)
@@ -36,22 +35,16 @@ public class SimpleEmailClient
             using var smtp = new SmtpClient();
             smtp.Host = _smtpServer;
             smtp.Port = _smtpPort;
-            
+
             if (_username is not null && _password is not null)
             {
-                if (_ssl)
-                {
-                    smtp.EnableSsl = true;
-                }
+                if (_ssl) smtp.EnableSsl = true;
                 smtp.Credentials = new NetworkCredential(_username, _password);
             }
 
             var message = new MailMessage();
             message.From = new MailAddress(_fromAddress);
-            foreach (var address in toAddress)
-            {
-                message.To.Add(new MailAddress(address));
-            }
+            foreach (var address in toAddress) message.To.Add(new MailAddress(address));
             message.Subject = subject;
             message.SubjectEncoding = Encoding.UTF8;
             message.Body = body;

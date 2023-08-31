@@ -1,6 +1,5 @@
-using FluentValidation;
-using System.Data.Common;
 using System.Net.Mail;
+using FluentValidation;
 
 namespace SimpleSqlChangeNotifications.Options;
 
@@ -18,7 +17,8 @@ public class SimpleSqlChangeNotificationOptionsValidator : AbstractValidator<Sim
             .Must(ValidateUsingMailAddress).WithMessage("SMTP From Address must be a valid email address.");
 
         RuleFor(x => x.SmtpToAddress)
-            .Must(ContainValidEmail).WithMessage("SMTP Notification To Addresses must contain at least one valid email address.");
+            .Must(ContainValidEmail)
+            .WithMessage("SMTP Notification To Addresses must contain at least one valid email address.");
 
         RuleFor(x => x.Query)
             .Must(x => x != null && x.StartsWith("select ", StringComparison.OrdinalIgnoreCase))
@@ -29,12 +29,15 @@ public class SimpleSqlChangeNotificationOptionsValidator : AbstractValidator<Sim
             .WithMessage("Primary Key must contain at least one column name.");
 
         RuleFor(x => x.ConnectionString)
-           .NotNull()
-           .MinimumLength(8)
-           .WithMessage("Connection String must be a valid connection string.");
+            .NotNull()
+            .MinimumLength(8)
+            .WithMessage("Connection String must be a valid connection string.");
     }
-    
-    private bool ContainValidEmail(string[] emails) => emails.All(ValidateUsingMailAddress);
+
+    private bool ContainValidEmail(string[] emails)
+    {
+        return emails.All(ValidateUsingMailAddress);
+    }
 
     private static bool ValidateUsingMailAddress(string emailAddress)
     {

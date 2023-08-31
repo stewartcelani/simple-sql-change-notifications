@@ -1,5 +1,4 @@
-﻿using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
@@ -8,9 +7,7 @@ using Serilog.Sinks.InMemory;
 using SimpleSqlChangeNotifications;
 using SimpleSqlChangeNotifications.Data;
 using SimpleSqlChangeNotifications.Extensions;
-using SimpleSqlChangeNotifications.Library;
 using SimpleSqlChangeNotifications.Options;
-
 
 try
 {
@@ -29,27 +26,27 @@ try
                 loggingBuilder.ClearProviders();
                 loggingBuilder.AddSerilog(Log.Logger, true);
             });
-        
+
             // Bind and validate the SimpleSqlChangeNotificationOptions key from appsettings.json
-            var options = context.Configuration.BindAndValidate<SimpleSqlChangeNotificationOptions, SimpleSqlChangeNotificationOptionsValidator>();
+            var options = context.Configuration
+                .BindAndValidate<SimpleSqlChangeNotificationOptions, SimpleSqlChangeNotificationOptionsValidator>();
             services.AddSingleton(options);
-            
+
             // Dapper abstraction layer
             services.AddTransient<IDbConnectionFactory, SqlDbConnectionFactory>();
-            
+
             // Add core app entrypoint
             services.AddSingleton<App>();
         })
         .Build();
 
     var app = host.Services.GetRequiredService<App>();
-    
+
     await app.RunAsync(); // Run app
 }
 catch (Exception ex)
 {
     Log.Fatal(ex, "An unhandled exception occurred during application startup or execution.");
-
 }
 finally
 {
