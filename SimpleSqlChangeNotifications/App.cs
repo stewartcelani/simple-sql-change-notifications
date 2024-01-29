@@ -146,7 +146,7 @@ public class App
 
         if (changes.Any())
         {
-            if (!HandleNotification(connection.Database, sinceText, changes))
+            if (!HandleNotification(connection.Database,  _options.SmtpSubject, sinceText, changes))
                 _logger.LogError("Changes detected but failed to send notification.");
         }
         else if (oldResult.Any())
@@ -158,7 +158,7 @@ public class App
     }
 
 
-    private bool HandleNotification(string databaseName, string sinceText, List<DataItemChange> changes)
+    private bool HandleNotification(string databaseName, string smtpSubject, string sinceText, List<DataItemChange> changes)
     {
         _logger.LogInformation("Changes detected. Sending notification.");
 
@@ -234,10 +234,16 @@ public class App
             _options.SmtpSSL, _options.SmtpUsername, _options.SmtpPassword, _logger);
         try
         {
+            var subject = $"[{databaseName}]";
+            if (!string.IsNullOrWhiteSpace(_options.SmtpSubject))
+            {
+                subject += $" {_options.SmtpSubject} - ";
+            }
             var subjectSummary = changes.Count == 1 ? "1 change" : $"{changes.Count} changes";
-            var subject = $"[{databaseName}] {subjectSummary}";
+            subject += $"{subjectSummary}";
+            
             var htmlContent = @$"
-                    <h3>{subjectSummary} {sinceText}</h3>              
+                    <h3>{subject} {sinceText}</h3>              
                     <p>You are receiving this email because you are subscribed to receive notifications for changes to the following SQL query on the <b>{databaseName}</b> database: </p>
                     <pre style='color: orange; margin-bottom: 16px;'>{_options.Query}</pre>                    
                 ";
