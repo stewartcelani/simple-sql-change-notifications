@@ -8,6 +8,8 @@ The configuration can be changed at any time.
 
 If changes are detected the program will email the current runs log file to the configured email address(es).
 
+![example2.jpg](example2.jpg)
+
 ---
 
 Configuration is via appsettings.json:-
@@ -48,3 +50,4 @@ Cons:-
 
 Issues or feature requests-
 - Raise an issue (be as detailed as possible) and I'll try to accommodate.
+
