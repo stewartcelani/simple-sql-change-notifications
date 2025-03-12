@@ -21,8 +21,8 @@ public class SimpleSqlChangeNotificationOptionsValidator : AbstractValidator<Sim
             .WithMessage("SMTP Notification To Addresses must contain at least one valid email address.");
 
         RuleFor(x => x.Query)
-            .Must(x => x != null && x.StartsWith("select ", StringComparison.OrdinalIgnoreCase))
-            .WithMessage("Query must start with 'select '.");
+            .NotEmpty()
+            .WithMessage("Query must not be empty or null.");
 
         RuleFor(x => x.PrimaryKey)
             .NotEmpty()
